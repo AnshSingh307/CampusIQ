@@ -1,0 +1,13 @@
+data/
+*.sqlite*
+node_modules/
+.env
+.env.*
+secrets/
+*.secret
+*.secrets
+local-secrets.*
+test/
+*.md
+create-user.ps1
+start-campusiq.ps1

@@ -1,0 +1,11 @@
+data/
+*.sqlite*
+node_modules/
+.env
+.env.*
+!.env.example
+secrets/
+*.secret
+*.secrets
+local-secrets.*
+!demo-data.csv
