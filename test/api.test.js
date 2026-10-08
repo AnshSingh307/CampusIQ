@@ -12,7 +12,7 @@ const serverFile = path.join(root, 'server.js');
 
 function runCli(args, env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [serverFile, ...args], { cwd: root, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [serverFile, ...args], { cwd: root, env: { ...process.env, PUBLIC_DEMO_MODE: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
@@ -23,7 +23,7 @@ function runCli(args, env) {
 
 function startServer(env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [serverFile], { cwd: root, env: { ...process.env, ...env, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [serverFile], { cwd: root, env: { ...process.env, PUBLIC_DEMO_MODE: '', ...env, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', settled = false;
     const timer = setTimeout(() => fail(new Error(`Server start timed out. ${stderr || stdout}`)), 10_000);
     const fail = error => {
@@ -83,7 +83,7 @@ test('CampusIQ complete regression suite', { timeout: 90_000 }, async t => {
   const dataLines = csv.split(/\r?\n/).slice(1).filter(line => line.trim());
   const studentId = dataLines[0].split(',')[0].replaceAll('"', '').trim();
   const secondStudentId = dataLines.find(line => line.split(',')[0].replaceAll('"', '').trim() !== studentId).split(',')[0].replaceAll('"', '').trim();
-  const sharedEnv = { CAMPUSIQ_DATA_DIR: dataDir };
+  const sharedEnv = { CAMPUSIQ_DATA_DIR: dataDir, PUBLIC_DEMO_MODE: '' };
   let server, request, admin, faculty, facultyTwo, student, studentTwo;
   let courseId, assignmentId, submissionId, facultyId;
 
@@ -190,6 +190,9 @@ test('CampusIQ complete regression suite', { timeout: 90_000 }, async t => {
     assert.match(response.headers.get('content-type'), /^text\/javascript/);
     assert.match(response.data, /function renderStudentPortal/);
     assert.match(response.data, /function renderCharts/);
+    response = await request('/campusiq-config.js');
+    assert.equal(response.status, 200);
+    assert.match(response.data, /publicDemoMode:\s*false/);
   });
 
   await t.test('database initializes every table and seeds the demo CSV', async () => {

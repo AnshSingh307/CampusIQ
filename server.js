@@ -10,6 +10,10 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+if (String(process.env.PUBLIC_DEMO_MODE || '').trim().toLowerCase() === 'true') {
+  console.error('PUBLIC_DEMO_MODE is an isolated static build. Run npm run build:public-demo and publish dist/public-demo; do not start server.js.');
+  process.exit(1);
+}
 const isProduction = process.env.NODE_ENV === 'production';
 const isRailwayRuntime = Boolean(process.env.RAILWAY_ENVIRONMENT_ID && process.env.RAILWAY_SERVICE_ID);
 const configuredDataDir = process.env.CAMPUSIQ_DATA_DIR?.trim();
@@ -119,7 +123,7 @@ const sessions=new Map(), attempts=new Map();
 const SESSION_MS=8*60*60*1000, MAX_BODY=12*1024*1024;
 const trustedProxies=new Set(proxyPolicy.split(',').map(x=>normalizeIp(x.trim())).filter(x=>x&&x!=='railway'));
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.csv':'text/csv; charset=utf-8','.md':'text/markdown; charset=utf-8','.svg':'image/svg+xml'};
-const publicFiles=new Set(['index.html','prototype.js']);
+const publicFiles=new Set(['index.html','prototype.js','campusiq-config.js']);
 function send(res,status,body,headers={}) { const data=typeof body==='string'?body:JSON.stringify(body);res.writeHead(status,{'content-type':typeof body==='string'?'text/plain; charset=utf-8':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'same-origin',...headers});res.end(data); }
 function cookies(req){return Object.fromEntries((req.headers.cookie||'').split(';').map(x=>x.trim()).filter(Boolean).map(x=>{const i=x.indexOf('=');return [x.slice(0,i),decodeURIComponent(x.slice(i+1))];}));}
 function normalizeIp(value){return value.replace(/^\[|\]$/g,'').replace(/^::ffff:/,'');}

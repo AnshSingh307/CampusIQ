@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node server.js",
+    "build:public-demo": "node scripts/build-public-demo.js",
     "init-admin": "node server.js init-admin",
     "test": "node --test --test-concurrency=1"
   }
