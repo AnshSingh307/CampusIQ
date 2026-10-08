@@ -15,6 +15,8 @@ Only deploy the generated `dist/public-demo/` directory. It contains:
 
 - `index.html`
 - `prototype.js`
+- `premium-demo.css`
+- `premium-demo.js`
 - `campusiq-config.js`
 
 The build fails unless `PUBLIC_DEMO_MODE=true`. The generated `index.html` has no login form. The generated configuration selects a deterministic in-browser synthetic dataset, blocks private API calls, and keeps private write controls hidden or simulated. The static bundle does not include the project CSV or any SQLite file.

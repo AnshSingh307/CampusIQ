@@ -44,6 +44,8 @@ async function staticServer(directory, requests) {
     ['/', ['index.html', 'text/html; charset=utf-8']],
     ['/index.html', ['index.html', 'text/html; charset=utf-8']],
     ['/prototype.js', ['prototype.js', 'text/javascript; charset=utf-8']],
+    ['/premium-demo.css', ['premium-demo.css', 'text/css; charset=utf-8']],
+    ['/premium-demo.js', ['premium-demo.js', 'text/javascript; charset=utf-8']],
     ['/campusiq-config.js', ['campusiq-config.js', 'text/javascript; charset=utf-8']],
   ]);
   const server = http.createServer(async (req, res) => {
@@ -77,11 +79,13 @@ test('isolated public demo build', { timeout: 90_000 }, async t => {
       },
     });
     assert.equal(result.code, 0, result.stderr || result.stdout);
-    assert.deepEqual((await readdir(output)).sort(), ['campusiq-config.js', 'index.html', 'prototype.js']);
-    const [html, config, script] = await Promise.all([
+    assert.deepEqual((await readdir(output)).sort(), ['campusiq-config.js', 'index.html', 'premium-demo.css', 'premium-demo.js', 'prototype.js']);
+    const [html, config, script, premiumCss, premiumScript] = await Promise.all([
       readFile(path.join(output, 'index.html'), 'utf8'),
       readFile(path.join(output, 'campusiq-config.js'), 'utf8'),
       readFile(path.join(output, 'prototype.js'), 'utf8'),
+      readFile(path.join(output, 'premium-demo.css'), 'utf8'),
+      readFile(path.join(output, 'premium-demo.js'), 'utf8'),
     ]);
     assert.doesNotMatch(html, /id="loginForm"|id="loginUsername"|id="loginPassword"|type="password"/u);
     assert.match(html, /id="demoRoleSelect"/u);
@@ -95,6 +99,12 @@ test('isolated public demo build', { timeout: 90_000 }, async t => {
     assert.match(script, /records=seeded\(\)/u);
     assert.match(script, /demoFacultyIds/u);
     assert.match(script, /activateDemoRole/u);
+    assert.doesNotMatch(script, /fetch\s*\(|\/api\//u);
+    assert.doesNotMatch(script, /PUBLIC_BUILD_STRIP_PRIVATE_/u);
+    assert.match(premiumCss, /prefers-reduced-motion/u);
+    assert.match(premiumCss, /data-theme="light"/u);
+    assert.match(premiumScript, /campusiq-demo-theme/u);
+    assert.match(premiumScript, /runGlobalSearch/u);
     assert.equal((await readdir(output)).some(file => /\.sqlite|\.csv$/u.test(file)), false);
   });
 
@@ -128,58 +138,78 @@ test('isolated public demo build', { timeout: 90_000 }, async t => {
     const address = server.address();
     const base = `http://127.0.0.1:${address.port}`;
     let browserRun = 0;
-    const open = async query => {
+    const open = async (query, viewport = [1440, 1000]) => {
       browserRun += 1;
       const result = await run(browser, [
         '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+        `--window-size=${viewport[0]},${viewport[1]}`,
         `--user-data-dir=${path.join(temporary, `browser-profile-${browserRun}`)}`, '--virtual-time-budget=5000', '--dump-dom',
         `${base}/${query}`,
       ], { timeout: 45_000 });
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /data-demo-ready="true"/u);
       assert.match(result.stdout, /data-demo-errors="0"/u);
+      assert.match(result.stdout, /data-premium-ready="true"/u);
+      assert.match(result.stdout, /data-demo-horizontal-overflow="false"/u);
       assert.doesNotMatch(result.stdout, /id="loginForm"|id="loginUsername"|id="loginPassword"/u);
       return result.stdout;
     };
     try {
-      const administrator = await open('?role=administrator');
+      const administrator = await open('?role=administrator&expand=overviewChart');
       assert.match(administrator, /data-demo-role="administrator"/u);
+      assert.match(administrator, /data-demo-interaction="chart-expanded"/u);
+      assert.match(administrator, /class="card premium-expanded"/u);
       assert.match(administrator, /data-demo-students="512"/u);
-      assert.match(administrator, /id="metricTotal">512</u);
+      assert.match(administrator, /id="metricTotal"[^>]*data-counter-animated="true"/u);
       assert.match(administrator, /512 synthetic students/u);
+      assert.match(administrator, /id="themeToggle"/u);
+      assert.match(administrator, /id="globalDemoSearch"/u);
+      assert.match(administrator, /id="premiumHero"/u);
       for (const chartId of ['overviewChart', 'riskDonut', 'cgpaDistribution', 'attendanceScatter', 'placementByProgram', 'studentFlow']) {
         assert.match(administrator, new RegExp(`id="${chartId}"[^>]*>[\\s\\S]*?<svg`, 'u'), `${chartId} did not render an SVG chart`);
       }
 
-      const facultyOverview = await open('?role=faculty&section=overview');
+      const facultyOverview = await open('?role=administrator&switchRole=faculty', [1024, 900]);
       assert.match(facultyOverview, /data-demo-role="faculty"/u);
+      assert.match(facultyOverview, /data-demo-role-switched="true"/u);
       assert.match(facultyOverview, /id="publicFacultyPortal" class="demo-role-portal"/u);
-      assert.match(facultyOverview, /id="facultyStudentCount">8</u);
+      for (const id of ['STU-0002', 'STU-0006', 'STU-0010', 'STU-0014', 'STU-0018', 'STU-0022', 'STU-0026', 'STU-0030']) assert.match(facultyOverview, new RegExp(id, 'u'));
       assert.match(facultyOverview, /id="facultyScoreChart"><svg/u);
       assert.match(facultyOverview, /data-demo-section="faculty-overview">/u);
 
-      const facultyTeaching = await open('?role=faculty&section=teaching');
+      const facultyTeaching = await open('?role=faculty&section=teaching&simulate=grade');
       assert.match(facultyTeaching, /data-demo-section="faculty-teaching">/u);
+      assert.match(facultyTeaching, /data-demo-interaction="grade-simulated"/u);
       assert.match(facultyTeaching, /CS-204 · Data Structures/u);
       assert.match(facultyTeaching, /class="select demo-attendance-status"/u);
-      assert.match(facultyTeaching, /class="btn demo-grade"/u);
+      assert.match(facultyTeaching, /Demo grade recorded/u);
 
       const facultySupport = await open('?role=faculty&section=support');
       assert.match(facultySupport, /data-demo-section="faculty-support">/u);
       assert.match(facultySupport, /Suggestion only · faculty review required/u);
 
-      const studentProgress = await open('?role=student&section=progress');
+      const studentProgress = await open('?role=student&section=progress&theme=dark&toggleTheme=true', [390, 844]);
       assert.match(studentProgress, /data-demo-role="student"/u);
+      assert.match(studentProgress, /data-theme="light"/u);
       assert.match(studentProgress, /id="publicStudentPortal" class="demo-role-portal"/u);
       assert.match(studentProgress, /data-demo-section="student-progress">/u);
       assert.match(studentProgress, /id="demoStudentTrajectory"><svg/u);
       assert.match(studentProgress, /STU-0001/u);
 
-      const studentCoursework = await open('?role=student&section=coursework');
+      const studentCoursework = await open('?role=student&section=coursework&simulate=submit');
       assert.match(studentCoursework, /data-demo-section="student-coursework">/u);
+      assert.match(studentCoursework, /data-demo-interaction="submission-simulated"/u);
       assert.match(studentCoursework, /My assignments, submissions and grades/u);
       assert.match(studentCoursework, /Faculty feedback/u);
-      assert.match(studentCoursework, /class="btn demo-submit"/u);
+      assert.match(studentCoursework, /Submitted in this browser/u);
+
+      const searched = await open('?role=administrator&q=STU-0001&sort=name-asc&profile=STU-0001');
+      assert.match(searched, /data-demo-search="STU-0001"/u);
+      assert.match(searched, /data-demo-sort="name-asc"/u);
+      assert.match(searched, /data-demo-interaction="profile-opened"/u);
+      assert.match(searched, /id="triageCount">1 of 512 students</u);
+      assert.match(searched, /class="modal-backdrop open" id="profileBackdrop"/u);
+      assert.match(searched, /id="modalStudentId"[^>]*>STU-0001/u);
 
       assert.equal(requests.some(request => request.pathname.startsWith('/api/')), false, 'Browser requested a private API route');
     } finally {
