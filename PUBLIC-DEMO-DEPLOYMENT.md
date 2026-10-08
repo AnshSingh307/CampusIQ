@@ -16,9 +16,16 @@ Only deploy the generated `dist/public-demo/` directory. It contains:
 - `index.html`
 - `prototype.js`
 - `campusiq-config.js`
-- `demo-data.csv` (synthetic data only)
 
-The build fails unless `PUBLIC_DEMO_MODE=true`. The generated `index.html` has no login form. The generated configuration selects the in-browser synthetic dataset, blocks private API calls, and keeps private write controls hidden or read-only.
+The build fails unless `PUBLIC_DEMO_MODE=true`. The generated `index.html` has no login form. The generated configuration selects a deterministic in-browser synthetic dataset, blocks private API calls, and keeps private write controls hidden or simulated. The static bundle does not include the project CSV or any SQLite file.
+
+Visitors can switch among three complete demo views without credentials:
+
+- **Administrator** — cohort analytics, risk scoring, charts, student records, recommendations, and interventions.
+- **Faculty** — an eight-student synthetic roster, timetable, attendance, assignments, grading examples, and support suggestions.
+- **Student** — one synthetic profile with progress, Success Score, timetable, attendance, coursework, submissions, and grades.
+
+Faculty attendance/grading actions and the student submission action are browser-only simulations. They are not permanently saved online.
 
 ## Render dashboard settings
 

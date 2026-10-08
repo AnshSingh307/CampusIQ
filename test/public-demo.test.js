@@ -45,7 +45,6 @@ async function staticServer(directory, requests) {
     ['/index.html', ['index.html', 'text/html; charset=utf-8']],
     ['/prototype.js', ['prototype.js', 'text/javascript; charset=utf-8']],
     ['/campusiq-config.js', ['campusiq-config.js', 'text/javascript; charset=utf-8']],
-    ['/demo-data.csv', ['demo-data.csv', 'text/csv; charset=utf-8']],
   ]);
   const server = http.createServer(async (req, res) => {
     const pathname = new URL(req.url, 'http://localhost').pathname;
@@ -78,22 +77,25 @@ test('isolated public demo build', { timeout: 90_000 }, async t => {
       },
     });
     assert.equal(result.code, 0, result.stderr || result.stdout);
-    assert.deepEqual((await readdir(output)).sort(), ['campusiq-config.js', 'demo-data.csv', 'index.html', 'prototype.js']);
-    const [html, config, script, csv] = await Promise.all([
+    assert.deepEqual((await readdir(output)).sort(), ['campusiq-config.js', 'index.html', 'prototype.js']);
+    const [html, config, script] = await Promise.all([
       readFile(path.join(output, 'index.html'), 'utf8'),
       readFile(path.join(output, 'campusiq-config.js'), 'utf8'),
       readFile(path.join(output, 'prototype.js'), 'utf8'),
-      readFile(path.join(output, 'demo-data.csv'), 'utf8'),
     ]);
     assert.doesNotMatch(html, /id="loginForm"|id="loginUsername"|id="loginPassword"|type="password"/u);
+    assert.match(html, /id="demoRoleSelect"/u);
+    assert.match(html, /value="administrator">Administrator/u);
+    assert.match(html, /value="faculty">Faculty/u);
+    assert.match(html, /value="student">Student/u);
+    assert.match(html, /id="publicFacultyPortal"/u);
+    assert.match(html, /id="publicStudentPortal"/u);
     assert.match(config, /publicDemoMode:\s*true/u);
     assert.match(script, /Private APIs are unavailable in public demo mode/u);
     assert.match(script, /records=seeded\(\)/u);
-    assert.match(csv, /^student_id,name,term,program,/u);
-    const studentRows = csv.trim().split(/\r?\n/u).slice(1);
-    assert.ok(studentRows.length > 100, 'Expected a substantial synthetic demo dataset');
-    assert.equal(studentRows.every(row => /^STU-\d{4},/u.test(row)), true);
-    assert.equal((await readdir(output)).some(file => /\.sqlite/u.test(file)), false);
+    assert.match(script, /demoFacultyIds/u);
+    assert.match(script, /activateDemoRole/u);
+    assert.equal((await readdir(output)).some(file => /\.sqlite|\.csv$/u.test(file)), false);
   });
 
   await t.test('server.js refuses public demo mode before creating a database', async () => {
@@ -118,28 +120,67 @@ test('isolated public demo build', { timeout: 90_000 }, async t => {
     assert.equal(writeAttempt.status, 404);
   });
 
-  await t.test('headless browser opens without authentication and renders the synthetic dashboard', async t => {
+  await t.test('headless browser renders all role routes, navigation panels, charts, and no JavaScript errors', async t => {
     const browser = browserPath();
     if (!browser) { t.skip('No supported headless browser found'); return; }
     const requests = [];
     const server = await staticServer(output, requests);
     const address = server.address();
-    const profile = path.join(temporary, 'browser-profile');
-    try {
+    const base = `http://127.0.0.1:${address.port}`;
+    let browserRun = 0;
+    const open = async query => {
+      browserRun += 1;
       const result = await run(browser, [
         '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-        `--user-data-dir=${profile}`, '--virtual-time-budget=5000', '--dump-dom',
-        `http://127.0.0.1:${address.port}/`,
+        `--user-data-dir=${path.join(temporary, `browser-profile-${browserRun}`)}`, '--virtual-time-budget=5000', '--dump-dom',
+        `${base}/${query}`,
       ], { timeout: 45_000 });
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /data-demo-ready="true"/u);
-      assert.match(result.stdout, /data-demo-students="512"/u);
-      assert.match(result.stdout, /id="metricTotal">512</u);
-      assert.match(result.stdout, /512 synthetic students/u);
-      for (const chartId of ['overviewChart', 'riskDonut', 'cgpaDistribution', 'attendanceScatter', 'placementByProgram', 'studentFlow']) {
-        assert.match(result.stdout, new RegExp(`id="${chartId}"[^>]*>[\\s\\S]*?<svg`, 'u'), `${chartId} did not render an SVG chart`);
-      }
+      assert.match(result.stdout, /data-demo-errors="0"/u);
       assert.doesNotMatch(result.stdout, /id="loginForm"|id="loginUsername"|id="loginPassword"/u);
+      return result.stdout;
+    };
+    try {
+      const administrator = await open('?role=administrator');
+      assert.match(administrator, /data-demo-role="administrator"/u);
+      assert.match(administrator, /data-demo-students="512"/u);
+      assert.match(administrator, /id="metricTotal">512</u);
+      assert.match(administrator, /512 synthetic students/u);
+      for (const chartId of ['overviewChart', 'riskDonut', 'cgpaDistribution', 'attendanceScatter', 'placementByProgram', 'studentFlow']) {
+        assert.match(administrator, new RegExp(`id="${chartId}"[^>]*>[\\s\\S]*?<svg`, 'u'), `${chartId} did not render an SVG chart`);
+      }
+
+      const facultyOverview = await open('?role=faculty&section=overview');
+      assert.match(facultyOverview, /data-demo-role="faculty"/u);
+      assert.match(facultyOverview, /id="publicFacultyPortal" class="demo-role-portal"/u);
+      assert.match(facultyOverview, /id="facultyStudentCount">8</u);
+      assert.match(facultyOverview, /id="facultyScoreChart"><svg/u);
+      assert.match(facultyOverview, /data-demo-section="faculty-overview">/u);
+
+      const facultyTeaching = await open('?role=faculty&section=teaching');
+      assert.match(facultyTeaching, /data-demo-section="faculty-teaching">/u);
+      assert.match(facultyTeaching, /CS-204 · Data Structures/u);
+      assert.match(facultyTeaching, /class="select demo-attendance-status"/u);
+      assert.match(facultyTeaching, /class="btn demo-grade"/u);
+
+      const facultySupport = await open('?role=faculty&section=support');
+      assert.match(facultySupport, /data-demo-section="faculty-support">/u);
+      assert.match(facultySupport, /Suggestion only · faculty review required/u);
+
+      const studentProgress = await open('?role=student&section=progress');
+      assert.match(studentProgress, /data-demo-role="student"/u);
+      assert.match(studentProgress, /id="publicStudentPortal" class="demo-role-portal"/u);
+      assert.match(studentProgress, /data-demo-section="student-progress">/u);
+      assert.match(studentProgress, /id="demoStudentTrajectory"><svg/u);
+      assert.match(studentProgress, /STU-0001/u);
+
+      const studentCoursework = await open('?role=student&section=coursework');
+      assert.match(studentCoursework, /data-demo-section="student-coursework">/u);
+      assert.match(studentCoursework, /My assignments, submissions and grades/u);
+      assert.match(studentCoursework, /Faculty feedback/u);
+      assert.match(studentCoursework, /class="btn demo-submit"/u);
+
       assert.equal(requests.some(request => request.pathname.startsWith('/api/')), false, 'Browser requested a private API route');
     } finally {
       await new Promise(resolve => server.close(resolve));

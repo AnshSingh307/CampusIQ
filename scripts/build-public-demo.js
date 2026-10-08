@@ -24,7 +24,6 @@ await mkdir(output, { recursive: true });
 await Promise.all([
   writeFile(path.join(output, 'index.html'), publicIndex, 'utf8'),
   cp(path.join(root, 'prototype.js'), path.join(output, 'prototype.js')),
-  cp(path.join(root, 'demo-data.csv'), path.join(output, 'demo-data.csv')),
   writeFile(
     path.join(output, 'campusiq-config.js'),
     '// Generated public-demo configuration. Contains no secrets.\nwindow.CAMPUSIQ_CONFIG = Object.freeze({ publicDemoMode: true });\n',
