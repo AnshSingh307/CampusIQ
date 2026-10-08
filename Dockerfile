@@ -2,12 +2,11 @@ FROM node:24-bookworm-slim
 
 ENV NODE_ENV=production \
     PORT=4173 \
-    CAMPUSIQ_DATA_DIR=/app/data
+    CAMPUSIQ_DATA_DIR=/data
 
 WORKDIR /app
 
 COPY --chown=node:node package.json server.js index.html prototype.js demo-data.csv ./
-RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
 EXPOSE 4173

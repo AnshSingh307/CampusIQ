@@ -92,18 +92,82 @@ test('CampusIQ complete regression suite', { timeout: 90_000 }, async t => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  await t.test('secure administrator initialization is idempotent', async () => {
+  await t.test('server startup creates the initial administrator once without logging credentials', async () => {
     const env = {
       ...sharedEnv,
       CAMPUSIQ_ADMIN_USERNAME: 'test-admin',
       CAMPUSIQ_ADMIN_DISPLAY_NAME: 'Test Administrator',
       CAMPUSIQ_ADMIN_PASSWORD: 'Admin-Test-Password-123!',
     };
-    const created = await runCli(['init-admin'], env);
-    assert.match(created.stdout, /Created initial administrator account: test-admin/);
-    assert.doesNotMatch(created.stdout + created.stderr, /Admin-Test-Password-123!/);
-    const repeated = await runCli(['init-admin'], env);
+    server = await startServer(env);
+    let bootstrapRequest = clientFor(server.port);
+    let signedIn = await login(bootstrapRequest, 'test-admin', 'Admin-Test-Password-123!');
+    assert.equal(signedIn.status, 200);
+    assert.match(server.output, /Initial administrator account created from environment configuration/);
+    assert.doesNotMatch(server.output + server.stderr(), /Admin-Test-Password-123!|test-admin/);
+    await stopServer(server);
+    server = await startServer({ ...env, CAMPUSIQ_ADMIN_PASSWORD: 'Different-Password-456!' });
+    bootstrapRequest = clientFor(server.port);
+    signedIn = await login(bootstrapRequest, 'test-admin', 'Admin-Test-Password-123!');
+    assert.equal(signedIn.status, 200);
+    const overwritten = await login(bootstrapRequest, 'test-admin', 'Different-Password-456!');
+    assert.equal(overwritten.status, 401);
+    await stopServer(server);
+    const repeated = await runCli(['init-admin'], sharedEnv);
     assert.match(repeated.stdout, /already exists; no changes made/);
+  });
+
+  await t.test('unsafe production and Railway configuration fails clearly', async () => {
+    const emptyDataDir = await mkdtemp(path.join(tmpdir(), 'campusiq-empty-'));
+    try {
+      await assert.rejects(
+        runCli([], { NODE_ENV: 'production', CAMPUSIQ_DATA_DIR: emptyDataDir }),
+        /CAMPUSIQ_ADMIN_USERNAME/
+      );
+      await assert.rejects(
+        runCli([], {
+          NODE_ENV: 'production', PORT: '4173', CAMPUSIQ_DATA_DIR: dataDir, CAMPUSIQ_TRUST_PROXY: 'railway',
+          RAILWAY_ENVIRONMENT_ID: 'test-environment', RAILWAY_SERVICE_ID: 'test-service',
+        }),
+        /Attach a Railway volume and mount it at \/data/
+      );
+    } finally {
+      await rm(emptyDataDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('Railway production startup bootstraps an empty mounted volume exactly once', async () => {
+    const railwayDataDir = await mkdtemp(path.join(tmpdir(), 'campusiq-railway-'));
+    const railwayEnv = {
+      NODE_ENV: 'production',
+      CAMPUSIQ_DATA_DIR: railwayDataDir,
+      CAMPUSIQ_TRUST_PROXY: 'railway',
+      RAILWAY_ENVIRONMENT_ID: 'test-environment',
+      RAILWAY_SERVICE_ID: 'test-service',
+      RAILWAY_VOLUME_MOUNT_PATH: railwayDataDir,
+    };
+    let railwayServer;
+    try {
+      railwayServer = await startServer({
+        ...railwayEnv,
+        CAMPUSIQ_ADMIN_USERNAME: 'railway-admin',
+        CAMPUSIQ_ADMIN_DISPLAY_NAME: 'Railway Administrator',
+        CAMPUSIQ_ADMIN_PASSWORD: 'Railway-Admin-Password-123!',
+      });
+      let railwayRequest = clientFor(railwayServer.port);
+      let signedIn = await login(railwayRequest, 'railway-admin', 'Railway-Admin-Password-123!');
+      assert.equal(signedIn.status, 200);
+      assert.match(signedIn.headers.get('set-cookie'), /; Secure/i);
+      assert.doesNotMatch(railwayServer.output + railwayServer.stderr(), /Railway-Admin-Password-123!|railway-admin/);
+      await stopServer(railwayServer);
+      railwayServer = await startServer(railwayEnv);
+      railwayRequest = clientFor(railwayServer.port);
+      signedIn = await login(railwayRequest, 'railway-admin', 'Railway-Admin-Password-123!');
+      assert.equal(signedIn.status, 200);
+    } finally {
+      await stopServer(railwayServer);
+      await rm(railwayDataDir, { recursive: true, force: true });
+    }
   });
 
   await t.test('backend starts without errors on Node.js 24+', async () => {
@@ -359,16 +423,27 @@ test('CampusIQ complete regression suite', { timeout: 90_000 }, async t => {
   });
 
   await stopServer(server);
-  server = await startServer({ ...sharedEnv, NODE_ENV: 'production', CAMPUSIQ_TRUST_PROXY: '127.0.0.1' });
+  server = await startServer({
+    ...sharedEnv,
+    NODE_ENV: 'production',
+    CAMPUSIQ_TRUST_PROXY: 'railway',
+    RAILWAY_ENVIRONMENT_ID: 'test-environment',
+    RAILWAY_SERVICE_ID: 'test-service',
+    RAILWAY_VOLUME_MOUNT_PATH: dataDir,
+  });
   request = clientFor(server.port);
-  await t.test('production binds externally and a trusted HTTPS proxy produces Secure cookies', async () => {
+  await t.test('Railway production binds externally and safely handles HTTPS proxy headers', async () => {
     assert.match(server.output, /http:\/\/0\.0\.0\.0:/);
     const proxiedRequest = clientFor(server.port);
-    const headers = { host: '127.0.0.1', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'campusiq.example', origin: 'https://campusiq.example' };
+    const headers = { host: '127.0.0.1', 'x-railway-edge': 'iad1', 'x-railway-request-id': 'test-request-id', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'campusiq.example', 'x-real-ip': '203.0.113.20', origin: 'https://campusiq.example' };
     const response = await login(proxiedRequest, 'test-admin', 'Admin-Test-Password-123!', headers);
     assert.equal(response.status, 200);
     assert.match(response.headers.get('set-cookie'), /; Secure/i);
+    assert.match(response.headers.get('set-cookie'), /HttpOnly/i);
+    assert.match(response.headers.get('set-cookie'), /SameSite=Strict/i);
     const rejected = await login(proxiedRequest, 'test-admin', 'Admin-Test-Password-123!', { ...headers, origin: 'https://attacker.example' });
     assert.equal(rejected.status, 403);
+    const unmarked = await login(proxiedRequest, 'test-admin', 'Admin-Test-Password-123!', { ...headers, 'x-railway-edge': '', origin: 'https://campusiq.example' });
+    assert.equal(unmarked.status, 403);
   });
 });

@@ -4,14 +4,33 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const isProduction = process.env.NODE_ENV === 'production';
+const isRailwayRuntime = Boolean(process.env.RAILWAY_ENVIRONMENT_ID && process.env.RAILWAY_SERVICE_ID);
 const configuredDataDir = process.env.CAMPUSIQ_DATA_DIR?.trim();
 const dataDir = configuredDataDir ? path.resolve(configuredDataDir) : path.join(root, 'data');
+const proxyPolicy = String(process.env.CAMPUSIQ_TRUST_PROXY || '').trim().toLowerCase();
+
+function validateRuntimeConfig() {
+  const errors = [];
+  if (isProduction && !configuredDataDir) errors.push('CAMPUSIQ_DATA_DIR must be set to an absolute persistent-volume path in production.');
+  if (isProduction && configuredDataDir && !path.isAbsolute(configuredDataDir)) errors.push('CAMPUSIQ_DATA_DIR must be an absolute path in production.');
+  if (isRailwayRuntime) {
+    if (!isProduction) errors.push('NODE_ENV must be production on Railway.');
+    if (!process.env.PORT) errors.push('Railway did not provide PORT.');
+    if (!process.env.RAILWAY_VOLUME_MOUNT_PATH) errors.push('Attach a Railway volume and mount it at /data.');
+    else if (path.resolve(process.env.RAILWAY_VOLUME_MOUNT_PATH) !== dataDir) errors.push('CAMPUSIQ_DATA_DIR must match RAILWAY_VOLUME_MOUNT_PATH (use /data for both).');
+    if (proxyPolicy !== 'railway') errors.push('Set CAMPUSIQ_TRUST_PROXY=railway for Railway HTTPS proxy handling.');
+  }
+  if (errors.length) throw new Error(`Production configuration error:\n- ${errors.join('\n- ')}`);
+}
+
+validateRuntimeConfig();
 fs.mkdirSync(dataDir, { recursive: true });
 const db = new DatabaseSync(path.join(dataDir, 'campusiq.sqlite'));
 db.exec(`PRAGMA foreign_keys=ON;
@@ -98,17 +117,19 @@ seedDemo();
 
 const sessions=new Map(), attempts=new Map();
 const SESSION_MS=8*60*60*1000, MAX_BODY=12*1024*1024;
-const trustedProxies=new Set(String(process.env.CAMPUSIQ_TRUST_PROXY||'').split(',').map(x=>normalizeIp(x.trim())).filter(Boolean));
+const trustedProxies=new Set(proxyPolicy.split(',').map(x=>normalizeIp(x.trim())).filter(x=>x&&x!=='railway'));
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.csv':'text/csv; charset=utf-8','.md':'text/markdown; charset=utf-8','.svg':'image/svg+xml'};
 const publicFiles=new Set(['index.html','prototype.js']);
 function send(res,status,body,headers={}) { const data=typeof body==='string'?body:JSON.stringify(body);res.writeHead(status,{'content-type':typeof body==='string'?'text/plain; charset=utf-8':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'same-origin',...headers});res.end(data); }
 function cookies(req){return Object.fromEntries((req.headers.cookie||'').split(';').map(x=>x.trim()).filter(Boolean).map(x=>{const i=x.indexOf('=');return [x.slice(0,i),decodeURIComponent(x.slice(i+1))];}));}
 function normalizeIp(value){return value.replace(/^\[|\]$/g,'').replace(/^::ffff:/,'');}
-function isTrustedProxy(req){return trustedProxies.has(normalizeIp(req.socket.remoteAddress||''));}
+function isRailwayProxyRequest(req){const edge=String(req.headers['x-railway-edge']||''),requestId=String(req.headers['x-railway-request-id']||''),proto=String(req.headers['x-forwarded-proto']||'').split(',')[0].trim().toLowerCase();return isRailwayRuntime&&proxyPolicy==='railway'&&/^[a-z]{3}\d+$/i.test(edge)&&requestId.length>0&&requestId.length<=256&&proto==='https';}
+function isTrustedProxy(req){return isRailwayProxyRequest(req)||trustedProxies.has(normalizeIp(req.socket.remoteAddress||''));}
 function forwardedValue(req,name){if(!isTrustedProxy(req))return '';return String(req.headers[name]||'').split(',')[0].trim();}
 function requestProtocol(req){if(req.socket.encrypted)return 'https';return forwardedValue(req,'x-forwarded-proto').toLowerCase()==='https'?'https':'http';}
 function requestHost(req){return forwardedValue(req,'x-forwarded-host')||String(req.headers.host||'');}
-function sessionCookie(req,token,maxAge){return `campusiq_session=${token?encodeURIComponent(token):''}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${requestProtocol(req)==='https'?'; Secure':''}`;}
+function clientAddress(req){const forwarded=forwardedValue(req,'x-real-ip');return forwarded&&isIP(normalizeIp(forwarded))?normalizeIp(forwarded):(req.socket.remoteAddress||'local');}
+function sessionCookie(req,token,maxAge){return `campusiq_session=${token?encodeURIComponent(token):''}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${isProduction||requestProtocol(req)==='https'?'; Secure':''}`;}
 function revokeUserSessions(userId){for(const [token,session] of sessions)if(session.id===userId)sessions.delete(token);}
 function sessionFor(req){const token=cookies(req).campusiq_session, s=token&&sessions.get(token);if(!s)return null;if(s.expires<Date.now()){sessions.delete(token);return null;}const user=statements.enabledUserById.get(s.id);if(!user){revokeUserSessions(s.id);return null;}const student=statements.studentAccount.get(user.id),role=student?'student':user.role;s.expires=Date.now()+SESSION_MS;return {token,id:user.id,username:user.username,name:user.display_name,role,studentId:student?.student_id,expires:s.expires};}
 function audit(user,action,detail=''){statements.audit.run(new Date().toISOString(),user?.id??null,action,detail.slice(0,500));}
@@ -130,7 +151,7 @@ function route(req,res){
     if(['POST','PUT','PATCH','DELETE'].includes(req.method)&&!safeOrigin(req))return send(res,403,{error:'Origin check failed'});
     if(req.method==='GET'&&p==='/api/session'){const s=sessionFor(req);return s?send(res,200,{user:{username:s.username,name:s.name,role:s.role}}):send(res,401,{error:'Sign in required'});}
     if(req.method==='POST'&&p==='/api/login')return body(req).then(input=>{
-      const key=req.socket.remoteAddress||'local', recent=(attempts.get(key)||[]).filter(t=>Date.now()-t<15*60*1000);if(recent.length>=10)return send(res,429,{error:'Too many attempts. Try again in 15 minutes.'});
+      const key=clientAddress(req), recent=(attempts.get(key)||[]).filter(t=>Date.now()-t<15*60*1000);if(recent.length>=10)return send(res,429,{error:'Too many attempts. Try again in 15 minutes.'});
       const user=statements.userByName.get(String(input.username||'').trim());let ok=false;
       if(user){const derived=scryptSync(String(input.password||''),user.salt,64);ok=timingSafeEqual(derived,user.password_hash);}
       if(!ok){recent.push(Date.now());attempts.set(key,recent);return send(res,401,{error:'Username or password is incorrect'});}
@@ -213,6 +234,22 @@ function route(req,res){
   res.writeHead(200,{'content-type':mime[path.extname(file)]||'application/octet-stream','cache-control':path.extname(file)==='.html'?'no-store':'public, max-age=300','x-content-type-options':'nosniff','referrer-policy':'same-origin'});if(req.method==='HEAD')return res.end();fs.createReadStream(file).pipe(res);
 }
 
+function bootstrapInitialAdmin({required=false}={}){
+  const existing=statements.adminCount.get().n>0;
+  const username=String(process.env.CAMPUSIQ_ADMIN_USERNAME||'').trim(),name=String(process.env.CAMPUSIQ_ADMIN_DISPLAY_NAME||'Campus Administrator').trim(),password=process.env.CAMPUSIQ_ADMIN_PASSWORD;
+  const supplied=Boolean(username||password||process.env.CAMPUSIQ_ADMIN_DISPLAY_NAME);
+  try{
+    if(existing)return {created:false,existing:true};
+    if(!supplied&&!required)return {created:false,existing:false};
+    if(!/^[a-zA-Z0-9._-]{3,60}$/.test(username))throw new Error('CAMPUSIQ_ADMIN_USERNAME must contain 3-60 letters, numbers, dots, underscores, or hyphens.');
+    if(!name)throw new Error('CAMPUSIQ_ADMIN_DISPLAY_NAME cannot be empty.');
+    if(!password||password.length<12)throw new Error('CAMPUSIQ_ADMIN_PASSWORD must contain at least 12 characters.');
+    const salt=randomBytes(16),hash=scryptSync(password,salt,64);statements.createUser.run(username,name,'admin',salt,hash);return {created:true,existing:false};
+  }finally{
+    delete process.env.CAMPUSIQ_ADMIN_PASSWORD;
+  }
+}
+
 function cli(){const [command,username,role,name]=process.argv.slice(2);if(command==='add-user'){
   if(!username||!['admin','faculty'].includes(role))throw new Error('Usage: CAMPUSIQ_USER_PASSWORD=<password> node server.js add-user <username> <admin|faculty> [display-name]');
   const password=process.env.CAMPUSIQ_USER_PASSWORD;if(!password||password.length<12)throw new Error('Set CAMPUSIQ_USER_PASSWORD to a password with at least 12 characters.');
@@ -228,16 +265,15 @@ function cli(){const [command,username,role,name]=process.argv.slice(2);if(comma
     const [studentId,facultyName]=process.argv.slice(3);const u=facultyName&&statements.findUserId.get(facultyName);if(!u)throw new Error('Usage: node server.js assign <student_id> <faculty-username>');if(!db.prepare('SELECT 1 FROM students WHERE student_id=? LIMIT 1').get(studentId))throw new Error('Student ID not found in the imported cohort.');statements.assign.run(studentId,u.id);console.log(`Assigned ${studentId} to ${facultyName}`);return true;
   }
   if(command==='init-admin'){
-    if(statements.adminCount.get().n){console.log('An administrator already exists; no changes made.');return true;}
-    const adminUsername=String(process.env.CAMPUSIQ_ADMIN_USERNAME||'').trim(),adminName=String(process.env.CAMPUSIQ_ADMIN_DISPLAY_NAME||'Campus Administrator').trim(),password=process.env.CAMPUSIQ_ADMIN_PASSWORD;
-    if(!/^[a-zA-Z0-9._-]{3,60}$/.test(adminUsername))throw new Error('Set CAMPUSIQ_ADMIN_USERNAME to 3-60 letters, numbers, dots, underscores, or hyphens.');
-    if(!adminName)throw new Error('CAMPUSIQ_ADMIN_DISPLAY_NAME cannot be empty.');
-    if(!password||password.length<12)throw new Error('Set CAMPUSIQ_ADMIN_PASSWORD to a password with at least 12 characters.');
-    const salt=randomBytes(16),hash=scryptSync(password,salt,64);statements.createUser.run(adminUsername,adminName,'admin',salt,hash);console.log(`Created initial administrator account: ${adminUsername}`);return true;
+    const result=bootstrapInitialAdmin({required:true});console.log(result.created?'Initial administrator account created.':'An administrator already exists; no changes made.');return true;
   }
   return false;
 }
-try{if(cli())process.exit(0);}catch(e){console.error(e.message);process.exit(1);}
+try{
+  if(cli())process.exit(0);
+  const bootstrap=bootstrapInitialAdmin({required:isProduction});
+  if(bootstrap.created)console.log('Initial administrator account created from environment configuration.');
+}catch(e){console.error(e.message);process.exit(1);}
 const port=Number(process.env.PORT||4173);if(!Number.isInteger(port)||port<0||port>65535)throw new Error('PORT must be an integer from 0 to 65535.');
 const host=isProduction?'0.0.0.0':'127.0.0.1';const server=http.createServer((req,res)=>{try{const result=route(req,res);if(result?.catch)result.catch(e=>send(res,500,{error:'Internal server error'}));}catch(e){send(res,e.status||500,{error:e.status?e.message:'Internal server error'});}});
 server.listen(port,host,()=>{const address=server.address();console.log(`CampusIQ server listening on http://${host}:${typeof address==='object'&&address?address.port:port}`);});

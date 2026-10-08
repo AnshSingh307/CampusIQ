@@ -107,7 +107,7 @@ CSV export remains a browser-side transformation of the records returned by `/ap
 
 Set `NODE_ENV=production` so the process listens on `0.0.0.0`. `PORT` selects the listening port. Put the service behind an institution-approved HTTPS reverse proxy and mount `CAMPUSIQ_DATA_DIR` on persistent, access-controlled storage. SQLite should be used by one CampusIQ server process at a time; do not run multiple replicas against the same database file.
 
-Create the initial administrator non-interactively before starting the service:
+Create the initial administrator non-interactively before starting a local Linux service:
 
 ```bash
 export CAMPUSIQ_DATA_DIR=/var/lib/campusiq
@@ -120,7 +120,9 @@ unset CAMPUSIQ_ADMIN_PASSWORD
 
 Use the hosting platform's secret manager to inject `CAMPUSIQ_ADMIN_PASSWORD`; do not put it in a command argument, image, repository, or shell-history assignment. The command never prints the password. If any administrator already exists, it exits successfully without changing or replacing that account.
 
-The container can be built with `docker build -t campusiq .`. Mount `/app/data` on persistent storage and inject the same environment variables when running `npm run init-admin` and `npm start`. The image runs as the unprivileged `node` user, so the mounted directory must be writable by that user.
+The container can be built with `docker build -t campusiq .`. Mount `/data` on persistent storage and inject the same environment variables when running the service. The normal production startup can create the first administrator from `CAMPUSIQ_ADMIN_*` when the database is empty; subsequent starts do not overwrite it. The image normally declares the unprivileged `node` user, so a mounted directory must be writable by the runtime user.
+
+For Railway-specific volume permissions, variables, automatic administrator bootstrap, health checks, backups, and GitHub deployment steps, see [RAILWAY-DEPLOYMENT.md](RAILWAY-DEPLOYMENT.md).
 
 ### Environment variables
 
@@ -129,7 +131,7 @@ The container can be built with `docker build -t campusiq .`. Mount `/app/data` 
 | `NODE_ENV` | Production only | Set to `production` to bind on `0.0.0.0`; other values retain the development-only `127.0.0.1` bind. |
 | `PORT` | No | HTTP port; defaults to `4173`. |
 | `CAMPUSIQ_DATA_DIR` | No | Directory containing `campusiq.sqlite`; defaults to the existing project `data/` folder. Relative values are resolved from the process working directory, so an absolute path is recommended in hosting. |
-| `CAMPUSIQ_TRUST_PROXY` | Only behind a TLS proxy | Comma-separated exact IP addresses of trusted direct reverse-proxy peers, for example `127.0.0.1,::1`. Only requests arriving from these addresses may supply `X-Forwarded-Proto` and `X-Forwarded-Host`. |
+| `CAMPUSIQ_TRUST_PROXY` | Only behind a TLS proxy | Use `railway` on Railway. Elsewhere, use comma-separated exact IP addresses of trusted direct reverse-proxy peers, for example `127.0.0.1,::1`. Untrusted requests cannot supply effective forwarded scheme, host, or client-IP values. |
 | `CAMPUSIQ_ADMIN_USERNAME` | For `npm run init-admin` | Initial administrator username (3–60 allowed characters). |
 | `CAMPUSIQ_ADMIN_DISPLAY_NAME` | No | Initial administrator display name; defaults to `Campus Administrator`. |
 | `CAMPUSIQ_ADMIN_PASSWORD` | For `npm run init-admin` | Initial administrator password, at least 12 characters. Treat as a secret. |
